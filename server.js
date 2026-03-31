@@ -435,47 +435,56 @@ async function getConversationHistory(phone) {
 // ==========================================
 
 // محادثات مع الوسائط
+// ==========================================
+// API للمحادثات مع الوسائط (محدث)
+// ==========================================
 app.get("/api/conversations", async (req, res) => {
-  const { data: msgs } = await supabase.from("messages").select("*")
-    .order("created_at", { ascending: false }).limit(200);
-  const { data: media } = await supabase.from("media").select("*")
-    .order("created_at", { ascending: false }).limit(100);
-  res.json({ messages: msgs || [], media: media || [] });
-});
-// API للذكاء الاصطناعي من الواجهة
-app.post("/api/ai/chat", async (req, res) => {
   try {
-    const { messages } = req.body;
-    
-    if (!messages || !messages.length) {
-      return res.status(400).json({ error: "لا توجد رسائل" });
-    }
+    // جلب جميع الرسائل
+    const { data: messages } = await supabase
+      .from("messages")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(500);
 
-    console.log(`🤖 طلب ذكاء اصطناعي من الواجهة: ${messages.length} رسائل`);
+    // جلب جميع الوسائط
+    const { data: media } = await supabase
+      .from("media")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(500);
 
-    const response = await axios.post(
-      "https://api.anthropic.com/v1/messages",
-      {
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 500,
-        system: SYSTEM_PROMPT,
-        messages: messages.map(m => ({ role: m.role, content: m.content }))
-      },
-      {
-        headers: {
-          "x-api-key": CONFIG.CLAUDE_API_KEY,
-          "anthropic-version": "2023-06-01",
-          "Content-Type": "application/json"
-        }
-      }
-    );
+    // تجميع الوسائط حسب رقم العميل
+    const mediaByPhone = {};
+    (media || []).forEach(m => {
+      if (!m.customer_phone) return;
+      if (!mediaByPhone[m.customer_phone]) mediaByPhone[m.customer_phone] = [];
+      mediaByPhone[m.customer_phone].push({
+        ...m,
+        media_url: m.media_url || null,
+        media_type: m.media_type,
+        caption: m.caption,
+        created_at: m.created_at
+      });
+    });
 
-    const reply = response.data.content[0].text;
-    res.json({ reply });
-    
+    // تجميع الرسائل حسب رقم العميل
+    const messagesByPhone = {};
+    (messages || []).forEach(m => {
+      if (!m.customer_phone) return;
+      if (!messagesByPhone[m.customer_phone]) messagesByPhone[m.customer_phone] = [];
+      messagesByPhone[m.customer_phone].push(m);
+    });
+
+    res.json({
+      messages: messages || [],
+      media: media || [],
+      mediaByPhone,
+      messagesByPhone
+    });
   } catch (error) {
-    console.error("❌ خطأ في Claude API:", error.message);
-    res.status(500).json({ error: "حدث خطأ في معالجة الطلب" });
+    console.error("❌ خطأ في جلب المحادثات:", error);
+    res.json({ messages: [], media: [], mediaByPhone: {}, messagesByPhone: {} });
   }
 });
 
