@@ -442,6 +442,42 @@ app.get("/api/conversations", async (req, res) => {
     .order("created_at", { ascending: false }).limit(100);
   res.json({ messages: msgs || [], media: media || [] });
 });
+// API للذكاء الاصطناعي من الواجهة
+app.post("/api/ai/chat", async (req, res) => {
+  try {
+    const { messages } = req.body;
+    
+    if (!messages || !messages.length) {
+      return res.status(400).json({ error: "لا توجد رسائل" });
+    }
+
+    console.log(`🤖 طلب ذكاء اصطناعي من الواجهة: ${messages.length} رسائل`);
+
+    const response = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 500,
+        system: SYSTEM_PROMPT,
+        messages: messages.map(m => ({ role: m.role, content: m.content }))
+      },
+      {
+        headers: {
+          "x-api-key": CONFIG.CLAUDE_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    const reply = response.data.content[0].text;
+    res.json({ reply });
+    
+  } catch (error) {
+    console.error("❌ خطأ في Claude API:", error.message);
+    res.status(500).json({ error: "حدث خطأ في معالجة الطلب" });
+  }
+});
 
 // وسائط رقم معين
 app.get("/api/media/:phone", async (req, res) => {
