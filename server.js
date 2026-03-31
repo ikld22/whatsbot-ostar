@@ -378,6 +378,41 @@ app.get("/api/stats", async (req, res) => {
   res.json({ totalMsgs, openTickets, totalTickets, totalMedia });
 });
 
+// ── تلخيص المحادثة بالذكاء ──
+app.post("/api/summarize", async (req, res) => {
+  try {
+    const { messages } = req.body;
+    if (!messages?.length) return res.json({ summary: "" });
+
+    const conv = messages.map(m =>
+      `${m.role === "user" ? "العميل" : "البوت"}: ${m.content}`
+    ).join("\n");
+
+    const response = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 400,
+        messages: [{
+          role: "user",
+          content: `لخص هذه المحادثة بإيجاز شديد (3 أسطر فقط):\n📋 ما أراده العميل:\n✅ ما تم:\n😊 الرضا: [ممتاز/جيد/متوسط/سيء]\n\n${conv}`
+        }]
+      },
+      {
+        headers: {
+          "x-api-key": CONFIG.CLAUDE_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json"
+        }
+      }
+    );
+    res.json({ summary: response.data.content[0].text });
+  } catch (err) {
+    console.error("❌ خطأ في التلخيص:", err.message);
+    res.json({ summary: "" });
+  }
+});
+
 app.get("/", (req, res) => {
   res.json({ status: "✅ الخادم يعمل", time: new Date().toISOString() });
 });
