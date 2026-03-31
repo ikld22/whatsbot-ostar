@@ -1,6 +1,4 @@
-// server.js - خادم واتساب + الذكاء الاصطناعي
-// تشغيل: npm install && node server.js
-
+// server.js - نجوم العمران — مع دعم التذاكر والصور والقوالب
 require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
@@ -9,16 +7,23 @@ const { createClient } = require("@supabase/supabase-js");
 const app = express();
 app.use(express.json());
 
-// === الإعدادات ===
+// ── CORS ──────────────────────────────────────────────────────
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+  next();
+});
+
 const CONFIG = {
   WHATSAPP_TOKEN: process.env.WHATSAPP_TOKEN,
-  VERIFY_TOKEN: process.env.VERIFY_TOKEN || "test123",
+  VERIFY_TOKEN: process.env.VERIFY_TOKEN || "ostar2024secret",
   CLAUDE_API_KEY: process.env.CLAUDE_API_KEY,
   SUPABASE_URL: process.env.SUPABASE_URL,
   SUPABASE_KEY: process.env.SUPABASE_KEY,
 };
 
-// طباعة الإعدادات عند التشغيل للتأكد
 console.log("═══════════════════════════════");
 console.log("🚀 إعدادات الخادم:");
 console.log("VERIFY_TOKEN:", CONFIG.VERIFY_TOKEN);
@@ -44,13 +49,12 @@ const SYSTEM_PROMPT = `
 التأسيس: 2011
 الموقع الإلكتروني: ostar.com.sa
 التواصل المباشر: 00966148666667
-رقم الواتساب: 966543659921
-ساعات العمل: 8 صباحاً حتى 12 منتصف الليل — يومياً بدون إجازة
+ساعات العمل: 8 صباحاً حتى 12 منتصف الليل — يومياً
 التوصيل: لجميع أنحاء المملكة العربية السعودية
 التركيب: داخل المدينة المنورة فقط
 
 ═══════════════════════════════════
-الفروع — المدينة المنورة (6 فروع)
+الفروع — المدينة المنورة
 ═══════════════════════════════════
 1. فرع السلام
 2. فرع شوران
@@ -58,121 +62,54 @@ const SYSTEM_PROMPT = `
 4. فرع الدائري — تكييف مركزي
 5. فرع سوق الكهرباء — تكييف مركزي
 6. فرع قباء — تكييف مركزي
-+ فرع متخصص لقطع غيار التكييف والتبريد
-
-ملاحظة: الأسعار على الموقع مخصصة للشراء الإلكتروني فقط وقد لا تتوفر في المعرض.
++ فرع قطع غيار التكييف والتبريد
 
 ═══════════════════════════════════
-المنتجات والخدمات الكاملة
+المنتجات والخدمات
 ═══════════════════════════════════
-
-【 أجهزة التكييف 】
-- مكيفات سبليت (جميع الأحجام)
-- مكيفات شباك
-- مكيفات دكت سبليت
-- مكيفات مركزية
-- مكيفات دولابي
-- مراوح وستائر هوائية
-- مجاري هواء دكت
+- مكيفات سبليت، شباك، دكت، مركزية، دولابي
 - غرف تبريد وتجميد
-
-【 الماركات المتوفرة 】
-- General Supreme (الماركة الرئيسية)
-- ميديا
-- LG
-- باناسونيك
-- وماركات أخرى متعددة
-
-【 الأجهزة المنزلية الكبيرة 】
-- غسالات، ثلاجات، مجففات
-- أفران ومايكروويف
-
-【 الأجهزة المنزلية الصغيرة 】
-- عصارات وخلاطات
-- أجهزة المطبخ المتنوعة
-- أجهزة العناية الشخصية
-
-【 الشاشات والإلكترونيات 】
-- شاشات تلفزيون
-- جوالات وتابلت ولابتوب
-
-【 مواد التكييف 】
-- مواسير نحاسية
-- قطع غيار تكييف وتبريد
-- توصيلات كهربائية
-
-【 الخدمات 】
-- توريد تكييف بجميع الأنواع
-- تأسيس نحاس ومواسير
-- تركيب وتشغيل تكييف (داخل المدينة فقط)
-- دراسة وتنفيذ مشاريع التكييف المركزي
-- صيانة وإصلاح الأجهزة
-- توريد قطع الغيار
-
-═══════════════════════════════════
-أرقام وكلاء الصيانة المعتمدين
-═══════════════════════════════════
-- ميديا وبيكو: 920005637 / 8002440247
-- تمكين: 920009257 / 8002444464
-- باناسونيك وLG وميديا (مجموعة شاكر): 8002445454
-- TCL ومولينكس وتيفال (العيسائي): 8002440305
-- فيليبس (انشور): 8007526666
-- الزامل: 920000468
-- هيتاشي وجيبسون (حمد العيسى): 920015511
+- أجهزة منزلية كبيرة وصغيرة
+- شاشات وإلكترونيات وجوالات
+- تأسيس نحاس، تركيب، صيانة وإصلاح
+- دراسة مشاريع التكييف المركزي
+- الماركات: General Supreme، ميديا، LG، باناسونيك
 
 ═══════════════════════════════════
 العروض والخصومات
 ═══════════════════════════════════
-- كود خصم VIP5 = خصم 5% على جميع المشتريات
+- كود خصم VIP5 = 5% على جميع المشتريات
 - يطبق على: مدى، فيزا، ماستركارد، آبل باي
-- عروض شهرية متجددة على الموقع
 
 ═══════════════════════════════════
-سياسة التوصيل
+سياسة الاسترجاع والضمان
 ═══════════════════════════════════
-- مدة التوصيل: 3 إلى 7 أيام عمل (لا تشمل الجمعة)
-- قد تصل لـ 15 يوم في حالات استثنائية
-- التوصيل داخل المدينة: للعنوان مباشرة
-- التوصيل خارج المدينة: استلام من فرع شركة الشحن
+- استرجاع واستبدال خلال 7 أيام من الاستلام
+- ضمان سنتان من تاريخ الشراء
+- لا يمكن استرجاع المكيف بعد التركيب
 
 ═══════════════════════════════════
-سياسة الاسترجاع والاستبدال
+قواعد صارمة
 ═══════════════════════════════════
-✅ يحق للعميل الاسترجاع أو الاستبدال خلال 7 أيام من الاستلام
-✅ شرط: المنتج بحالته الأصلية غير مستخدم مع الكرتون وجميع الملحقات
-❌ لا يمكن استرجاع أو استبدال المكيف بعد التركيب
-❌ الشركة غير مسؤولة عن تمديد التغذية الكهربائية للمكيف
-❌ الشركة لا ترفع الأجهزة للأدوار العلوية
-
-═══════════════════════════════════
-الضمان
-═══════════════════════════════════
-- ضمان المنتجات: سنتان من تاريخ الشراء
-- بعد التوريد: الضمان على عاتق الوكيل المعتمد
-- لتقديم بلاغ عطل: عبر الموقع ostar.com.sa
-
-═══════════════════════════════════
-قواعد صارمة جداً — لا استثناء
-═══════════════════════════════════
-
-🚫 ممنوع منعاً باتاً:
-- أي رد خارج نطاق شركة نجوم العمران
-- الحديث عن المواعيد أو حجزها أو مناقشتها
-- التفاوض أو النقاش مع العميل
-- إعطاء خصومات غير كود VIP5
+🚫 ممنوع:
+- أي رد خارج نطاق الشركة
+- الحديث عن المواعيد أو حجزها
+- إعطاء خصومات غير VIP5
 - الحديث عن المنافسين
-- ذكر أسعار غير موجودة في بياناتك
 
-✅ إذا سأل عن موعد أو تركيب أو صيانة:
-رد فقط بـ: "للحجز والمواعيد تواصل معنا مباشرة على 00966148666667 أو عبر موقعنا ostar.com.sa 😊"
+✅ إذا سأل عن موعد أو صيانة أو تركيب:
+رد: "للحجز تواصل على 00966148666667 أو ostar.com.sa 😊"
+وأنشئ تذكرة تلقائياً بـ [CREATE_TICKET:نوع_المشكلة]
 
-✅ إذا سألك عن أي شيء لا تعرفه:
-رد فقط بـ: "سأحوّل سؤالك لأحد مختصينا الآن 🙏"
+✅ إذا أرسل صورة:
+رد: "شكراً، تم استلام الصورة وإضافتها لطلبك 📸 سيتواصل معك فريقنا قريباً"
 
-✅ ردودك دائماً:
-- مختصرة لا تتجاوز 3 أسطر
-- واضحة ومباشرة
-- ذكّر بكود VIP5 عند كل استفسار عن الشراء
+✅ إذا لم تعرف الجواب:
+رد: "سأحوّل سؤالك لأحد مختصينا الآن 🙏"
+وأنشئ تذكرة بـ [CREATE_TICKET:استفسار]
+
+✅ ردودك: مختصرة، واضحة، لا تتجاوز 3 أسطر
+✅ ذكّر بكود VIP5 عند كل استفسار عن الشراء
 `;
 
 // ==========================================
@@ -180,176 +117,200 @@ const SYSTEM_PROMPT = `
 // ==========================================
 app.get("/webhook", (req, res) => {
   console.log("🔍 طلب تحقق وصل");
-  console.log("Query params:", JSON.stringify(req.query));
-
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-
-  console.log("Mode:", mode);
-  console.log("Token المُرسل من Meta:", token);
-  console.log("Token المتوقع في الخادم:", CONFIG.VERIFY_TOKEN);
-  console.log("متطابق؟", token === CONFIG.VERIFY_TOKEN);
-
+  console.log("Token المُرسل:", token, "| المتوقع:", CONFIG.VERIFY_TOKEN, "| متطابق؟", token === CONFIG.VERIFY_TOKEN);
   if (mode === "subscribe" && token === CONFIG.VERIFY_TOKEN) {
     console.log("✅ Webhook verified بنجاح!");
     res.status(200).send(challenge);
   } else {
-    console.log("❌ فشل التحقق — Token غير متطابق");
+    console.log("❌ فشل التحقق");
     res.sendStatus(403);
   }
 });
 
 // ==========================================
-// 2. استقبال الرسائل من واتساب
+// 2. استقبال الرسائل
 // ==========================================
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
-
   try {
     const body = req.body;
-    console.log("📦 رسالة واردة:", JSON.stringify(body, null, 2));
-
-    if (body.object !== "whatsapp_business_account") {
-      console.log("⚠️ ليس حساب واتساب بيزنس");
-      return;
-    }
+    if (body.object !== "whatsapp_business_account") return;
 
     const entry = body.entry?.[0];
     const changes = entry?.changes?.[0];
     const value = changes?.value;
     const messages = value?.messages;
-
-    if (!messages?.length) {
-      console.log("⚠️ لا توجد رسائل في الطلب");
-      return;
-    }
+    if (!messages?.length) return;
 
     const msg = messages[0];
     const from = msg.from;
     const phoneNumberId = value?.metadata?.phone_number_id;
-    const text = msg.text?.body;
+    const msgType = msg.type;
 
-    console.log(`📩 رسالة من ${from}: ${text}`);
-    console.log(`📱 Phone Number ID: ${phoneNumberId}`);
+    console.log(`📩 رسالة من ${from} — النوع: ${msgType}`);
 
-    if (!text) {
-      console.log("⚠️ الرسالة ليست نصية");
-      return;
+    // معالجة حسب نوع الرسالة
+    if (msgType === "text") {
+      await handleTextMessage(from, msg.text.body, phoneNumberId);
+    } else if (msgType === "image" || msgType === "video" || msgType === "document" || msgType === "audio") {
+      await handleMediaMessage(from, msg, msgType, phoneNumberId);
+    } else {
+      console.log("⚠️ نوع رسالة غير مدعوم:", msgType);
     }
-
-    if (!phoneNumberId) {
-      console.log("❌ Phone Number ID مفقود!");
-      return;
-    }
-
-    await saveMessage(from, text, "user", phoneNumberId);
-    const history = await getConversationHistory(from);
-    const aiReply = await getAIResponse(history, text);
-    const finalReply = await processSpecialCommands(aiReply, from);
-
-    await sendWhatsAppMessage(from, finalReply, phoneNumberId);
-    await saveMessage(from, finalReply, "assistant", phoneNumberId);
 
   } catch (err) {
     console.error("❌ خطأ:", err.message);
-    if (err.response) {
-      console.error("تفاصيل الخطأ:", JSON.stringify(err.response.data, null, 2));
-    }
+    if (err.response) console.error("تفاصيل:", JSON.stringify(err.response.data, null, 2));
   }
 });
 
 // ==========================================
-// 3. الذكاء الاصطناعي (Claude)
+// 3. معالجة الرسائل النصية
+// ==========================================
+async function handleTextMessage(from, text, phoneNumberId) {
+  await saveMessage(from, text, "user", phoneNumberId);
+  const history = await getConversationHistory(from);
+  const aiReply = await getAIResponse(history, text);
+  const finalReply = await processSpecialCommands(aiReply, from, phoneNumberId);
+  await sendWhatsAppMessage(from, finalReply, phoneNumberId);
+  await saveMessage(from, finalReply, "assistant", phoneNumberId);
+}
+
+// ==========================================
+// 4. معالجة الصور والوسائط
+// ==========================================
+async function handleMediaMessage(from, msg, mediaType, phoneNumberId) {
+  const mediaObj = msg[mediaType];
+  const mediaId = mediaObj?.id;
+  const caption = mediaObj?.caption || "";
+  const mimeType = mediaObj?.mime_type || "";
+
+  // جلب رابط الصورة من Meta
+  let mediaUrl = null;
+  try {
+    const urlRes = await axios.get(
+      `https://graph.facebook.com/v19.0/${mediaId}`,
+      { headers: { Authorization: `Bearer ${CONFIG.WHATSAPP_TOKEN}` } }
+    );
+    mediaUrl = urlRes.data.url;
+  } catch (e) {
+    console.error("❌ خطأ في جلب رابط الوسائط:", e.message);
+  }
+
+  // إيجاد أو إنشاء تذكرة للعميل
+  const ticket = await getOrCreateTicket(from, "صيانة", caption || "أرسل العميل وسائط");
+
+  // حفظ الوسائط
+  await supabase.from("media").insert({
+    ticket_id: ticket.id,
+    customer_phone: from,
+    media_type: mediaType,
+    media_id: mediaId,
+    media_url: mediaUrl,
+    caption,
+    mime_type: mimeType,
+    created_at: new Date().toISOString(),
+  });
+
+  console.log(`📸 وسائط محفوظة للتذكرة: ${ticket.ticket_number}`);
+
+  // إرسال رد للعميل
+  const reply = `شكراً، تم استلام ${mediaType === "image" ? "الصورة" : "الملف"} وإضافتها لطلبك رقم ${ticket.ticket_number} 📸\nسيتواصل معك فريقنا قريباً 🌟`;
+  await sendWhatsAppMessage(from, reply, phoneNumberId);
+  await saveMessage(from, reply, "assistant", phoneNumberId);
+}
+
+// ==========================================
+// 5. الذكاء الاصطناعي
 // ==========================================
 async function getAIResponse(history, newMessage) {
   const messages = [
     ...history.map(m => ({ role: m.role, content: m.content })),
     { role: "user", content: newMessage }
   ];
-
   const response = await axios.post(
     "https://api.anthropic.com/v1/messages",
-    {
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 500,
-      system: SYSTEM_PROMPT,
-      messages,
-    },
-    {
-      headers: {
-        "x-api-key": CONFIG.CLAUDE_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
-    }
+    { model: "claude-sonnet-4-20250514", max_tokens: 500, system: SYSTEM_PROMPT, messages },
+    { headers: { "x-api-key": CONFIG.CLAUDE_API_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json" } }
   );
-
   const reply = response.data.content[0].text;
   console.log(`🤖 رد الذكاء: ${reply}`);
   return reply;
 }
 
 // ==========================================
-// 4. معالجة الأوامر الخاصة
+// 6. معالجة الأوامر الخاصة
 // ==========================================
-async function processSpecialCommands(reply, customerPhone) {
-  const bookMatch = reply.match(/\[BOOK_APPOINTMENT:(.+?):(.+?):(.+?):(.+?)\]/);
-  if (bookMatch) {
-    const [_, name, date, time, service] = bookMatch;
-    await bookAppointment({ name, date, time, service, phone: customerPhone });
-    return reply.replace(/\[BOOK_APPOINTMENT:.*?\]/, "").trim();
+async function processSpecialCommands(reply, from, phoneNumberId) {
+  // كشف إنشاء تذكرة
+  const ticketMatch = reply.match(/\[CREATE_TICKET:(.+?)\]/);
+  if (ticketMatch) {
+    const type = ticketMatch[1];
+    const ticket = await getOrCreateTicket(from, type);
+    console.log(`🎫 تذكرة منشأة: ${ticket.ticket_number}`);
+    return reply.replace(/\[CREATE_TICKET:.*?\]/, "").trim();
   }
   return reply;
 }
 
-async function bookAppointment({ name, date, time, service, phone }) {
-  const { error } = await supabase.from("appointments").insert({
-    customer_name: name,
-    customer_phone: phone,
-    date,
-    time,
-    service,
-    status: "confirmed",
-    booked_via: "whatsapp_ai",
-    created_at: new Date().toISOString(),
-  });
-  if (error) console.error("❌ خطأ في حجز الموعد:", error);
-  else console.log(`✅ موعد محجوز: ${name} - ${date} ${time}`);
+// ==========================================
+// 7. إدارة التذاكر
+// ==========================================
+async function getOrCreateTicket(phone, type = "أخرى", description = "") {
+  // تحقق من وجود تذكرة مفتوحة للعميل
+  const { data: existing } = await supabase
+    .from("tickets")
+    .select("*")
+    .eq("customer_phone", phone)
+    .in("status", ["جديد", "قيد المعالجة"])
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  if (existing && existing.length > 0) return existing[0];
+
+  // إنشاء تذكرة جديدة
+  const ticketNumber = `OST-${Date.now().toString().slice(-6)}`;
+  const { data: newTicket } = await supabase
+    .from("tickets")
+    .insert({
+      ticket_number: ticketNumber,
+      customer_phone: phone,
+      type,
+      status: "جديد",
+      priority: "متوسط",
+      description,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .select()
+    .single();
+
+  console.log(`🎫 تذكرة جديدة: ${ticketNumber} للعميل: ${phone}`);
+  return newTicket;
 }
 
 // ==========================================
-// 5. إرسال رسالة واتساب
+// 8. إرسال رسالة واتساب
 // ==========================================
 async function sendWhatsAppMessage(to, text, phoneNumberId) {
   console.log(`📤 إرسال رد إلى ${to}...`);
-  const response = await axios.post(
+  await axios.post(
     `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body: text },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${CONFIG.WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
+    { messaging_product: "whatsapp", to, type: "text", text: { body: text } },
+    { headers: { Authorization: `Bearer ${CONFIG.WHATSAPP_TOKEN}`, "Content-Type": "application/json" } }
   );
   console.log(`✅ رد أُرسل بنجاح إلى ${to}`);
-  return response.data;
 }
 
 // ==========================================
-// 6. قاعدة البيانات
+// 9. قاعدة البيانات
 // ==========================================
 async function saveMessage(phone, content, role, phoneNumberId) {
   const { error } = await supabase.from("messages").insert({
-    customer_phone: phone,
-    content,
-    role,
+    customer_phone: phone, content, role,
     whatsapp_number_id: phoneNumberId,
     created_at: new Date().toISOString(),
   });
@@ -357,37 +318,66 @@ async function saveMessage(phone, content, role, phoneNumberId) {
 }
 
 async function getConversationHistory(phone) {
-  const { data, error } = await supabase
-    .from("messages")
-    .select("role, content")
+  const { data } = await supabase
+    .from("messages").select("role, content")
     .eq("customer_phone", phone)
-    .order("created_at", { ascending: true })
-    .limit(20);
-  if (error) console.error("❌ خطأ في جلب التاريخ:", error.message);
+    .order("created_at", { ascending: true }).limit(20);
   return data || [];
 }
 
 // ==========================================
-// 7. API للداشبورد
+// 10. API للداشبورد
 // ==========================================
 app.get("/api/conversations", async (req, res) => {
-  const { data } = await supabase
-    .from("messages")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(100);
+  const { data } = await supabase.from("messages").select("*")
+    .order("created_at", { ascending: false }).limit(100);
   res.json(data || []);
+});
+
+app.get("/api/tickets", async (req, res) => {
+  const { data } = await supabase.from("tickets").select("*")
+    .order("created_at", { ascending: false });
+  res.json(data || []);
+});
+
+app.get("/api/tickets/:id", async (req, res) => {
+  const { id } = req.params;
+  const { data: ticket } = await supabase.from("tickets").select("*").eq("id", id).single();
+  const { data: media } = await supabase.from("media").select("*").eq("ticket_id", id);
+  const { data: msgs } = await supabase.from("messages").select("*").eq("customer_phone", ticket?.customer_phone).order("created_at");
+  res.json({ ticket, media: media || [], messages: msgs || [] });
+});
+
+app.patch("/api/tickets/:id", async (req, res) => {
+  const { id } = req.params;
+  const updates = { ...req.body, updated_at: new Date().toISOString() };
+  const { data } = await supabase.from("tickets").update(updates).eq("id", id).select().single();
+  res.json(data);
+});
+
+app.get("/api/templates", async (req, res) => {
+  const { data } = await supabase.from("templates").select("*").eq("is_active", true);
+  res.json(data || []);
+});
+
+app.post("/api/templates", async (req, res) => {
+  const { data } = await supabase.from("templates").insert(req.body).select().single();
+  res.json(data);
 });
 
 app.get("/api/appointments", async (req, res) => {
-  const { data } = await supabase
-    .from("appointments")
-    .select("*")
-    .order("date", { ascending: true });
+  const { data } = await supabase.from("appointments").select("*").order("date", { ascending: true });
   res.json(data || []);
 });
 
-// صفحة رئيسية للتأكد
+app.get("/api/stats", async (req, res) => {
+  const { count: totalMsgs } = await supabase.from("messages").select("*", { count: "exact", head: true });
+  const { count: openTickets } = await supabase.from("tickets").select("*", { count: "exact", head: true }).in("status", ["جديد", "قيد المعالجة"]);
+  const { count: totalTickets } = await supabase.from("tickets").select("*", { count: "exact", head: true });
+  const { count: totalMedia } = await supabase.from("media").select("*", { count: "exact", head: true });
+  res.json({ totalMsgs, openTickets, totalTickets, totalMedia });
+});
+
 app.get("/", (req, res) => {
   res.json({ status: "✅ الخادم يعمل", time: new Date().toISOString() });
 });
