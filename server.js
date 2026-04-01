@@ -291,28 +291,59 @@ async function handleMediaMessage(from, msg, mediaType, phoneNumberId) {
   const caption = mediaObj?.caption || "";
   const mimeType = mediaObj?.mime_type || "";
 
-  // جلب رابط الصورة من Meta
-  let mediaUrl = null;
+  let permanentUrl = null;
+
   try {
+    // 1. جلب رابط مؤقت من Meta
     const urlRes = await axios.get(
       `https://graph.facebook.com/v19.0/${mediaId}`,
       { headers: { Authorization: `Bearer ${CONFIG.WHATSAPP_TOKEN}` } }
     );
-    mediaUrl = urlRes.data.url;
+    const tempUrl = urlRes.data.url;
+
+    // 2. تحميل الصورة من Meta
+    const mediaRes = await axios.get(tempUrl, {
+      headers: { Authorization: `Bearer ${CONFIG.WHATSAPP_TOKEN}` },
+      responseType: "arraybuffer"
+    });
+    const mediaBuffer = Buffer.from(mediaRes.data);
+
+    // 3. رفع على Supabase Storage
+    const ext = mimeType.split("/")[1] || "jpg";
+    const fileName = `media/${from}/${mediaId}.${ext}`;
+
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from("whatsapp-media")
+      .upload(fileName, mediaBuffer, {
+        contentType: mimeType || "image/jpeg",
+        upsert: true
+      });
+
+    if (!uploadError) {
+      const { data: urlData } = supabase.storage
+        .from("whatsapp-media")
+        .getPublicUrl(fileName);
+      permanentUrl = urlData.publicUrl;
+      console.log(`✅ صورة محفوظة على Supabase: ${permanentUrl}`);
+    } else {
+      console.error("❌ خطأ في رفع الصورة:", uploadError.message);
+      // احتفظ بالرابط المؤقت كبديل
+      permanentUrl = tempUrl;
+    }
   } catch (e) {
-    console.error("❌ خطأ في جلب رابط الوسائط:", e.message);
+    console.error("❌ خطأ في معالجة الوسائط:", e.message);
   }
 
   // إيجاد أو إنشاء تذكرة للعميل
   const ticket = await getOrCreateTicket(from, "صيانة", caption || "أرسل العميل وسائط");
 
-  // حفظ الوسائط
+  // حفظ الوسائط مع الرابط الدائم
   await supabase.from("media").insert({
     ticket_id: ticket.id,
     customer_phone: from,
     media_type: mediaType,
     media_id: mediaId,
-    media_url: mediaUrl,
+    media_url: permanentUrl,
     caption,
     mime_type: mimeType,
     created_at: new Date().toISOString(),
