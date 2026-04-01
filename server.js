@@ -662,18 +662,35 @@ app.get("/api/numbers", async (req, res) => {
   }
 });
 
-// AI Chat للتجربة
+// AI Chat للتجربة (مع Zid)
 app.post("/api/ai/chat", async (req, res) => {
   try {
     const { messages } = req.body;
+    const lastMsg = messages[messages.length - 1]?.content || "";
+
+    // بحث في زد إذا كان سؤال عن منتج
+    const productQuery = await extractProductQuery(lastMsg);
+    const productContext = productQuery ? await searchZidProducts(productQuery) : null;
+
+    let systemWithZid = SYSTEM_PROMPT;
+    if (productContext) {
+      systemWithZid += `\n\n═══════════════════════════════════════════════════
+🛒 نتائج البحث في متجر زد (استخدمها للرد على العميل)
+═══════════════════════════════════════════════════
+${productContext}
+
+⚠️ استخدم هذه البيانات للرد — اذكر السعر والتوفر بوضوح واللهجة السعودية الودودة.
+إذا المنتج متوفر وعنده سعر، اذكر كود VIP5 للخصم 5%.`;
+    }
+
     const response = await axios.post(
       "https://api.anthropic.com/v1/messages",
-      { model: "claude-sonnet-4-20250514", max_tokens: 500, system: SYSTEM_PROMPT, messages },
+      { model: "claude-sonnet-4-20250514", max_tokens: 500, system: systemWithZid, messages },
       { headers: { "x-api-key": CONFIG.CLAUDE_API_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json" } }
     );
     res.json({ reply: response.data.content[0].text });
   } catch (err) {
-    res.json({ reply: "عذراً، حدث خطأ في الاتصال بالذكاء الاصطناعي." });
+    res.json({ reply: "عذراً، حدث خطأ في الاتصال." });
   }
 });
 
