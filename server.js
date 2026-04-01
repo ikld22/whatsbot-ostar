@@ -276,8 +276,9 @@ app.post("/webhook", async (req, res) => {
 async function handleTextMessage(from, text, phoneNumberId) {
   await saveMessage(from, text, "user", phoneNumberId);
 
-  // كشف إذا كان العميل يسأل عن منتج
-  const productContext = await searchZidProducts(text);
+  // Claude يقرر إذا كان سؤال عن منتج ويستخرج اسمه
+  const productQuery = await extractProductQuery(text);
+  const productContext = productQuery ? await searchZidProducts(productQuery) : null;
 
   const history = await getConversationHistory(from);
   const aiReply = await getAIResponse(history, text, productContext);
@@ -287,38 +288,71 @@ async function handleTextMessage(from, text, phoneNumberId) {
 }
 
 // ==========================================
+// 🧠 Claude يستخرج اسم المنتج من الرسالة
+// ==========================================
+async function extractProductQuery(text) {
+  try {
+    const response = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 100,
+        messages: [{
+          role: "user",
+          content: `أنت محلل رسائل لمتجر إلكتروني.
+
+اقرأ هذه الرسالة وقرر:
+- هل العميل يسأل عن منتج معين أو يريد معرفة سعره أو توفره؟
+- إذا نعم، استخرج اسم المنتج بالعربية للبحث عنه.
+- إذا لا (مثل سؤال عن فرع، صيانة، موعد، شكوى)، قل "لا".
+
+الرسالة: "${text}"
+
+رد بسطر واحد فقط:
+- إذا سؤال عن منتج: اكتب اسم المنتج فقط (مثال: مكيف سبليت 18 جري)
+- إذا ليس سؤال عن منتج: اكتب "لا"`
+        }]
+      },
+      { headers: { "x-api-key": CONFIG.CLAUDE_API_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json" } }
+    );
+
+    const result = response.data.content[0].text.trim();
+    if (result === "لا" || result.includes("لا") && result.length < 5) {
+      console.log("🧠 Claude: ليس سؤال عن منتج");
+      return null;
+    }
+    console.log(`🧠 Claude استخرج: "${result}"`);
+    return result;
+  } catch (e) {
+    console.error("❌ خطأ في استخراج المنتج:", e.message);
+    return null;
+  }
+}
+
+// ==========================================
 // 🛒 البحث في متجر زد
 // ==========================================
 async function searchZidProducts(query) {
   const ZID_TOKEN = process.env.ZID_TOKEN;
   const ZID_STORE_ID = process.env.ZID_STORE_ID;
-
   if (!ZID_TOKEN || !ZID_STORE_ID) return null;
-
-  // كلمات تدل على سؤال عن منتج
-  const productKeywords = /بكم|سعر|كم سعر|كم ثمن|يتوفر|عندكم|متوفر|ابغى|احتاج|اشتري|شراء|منتج|موديل|مكيف|ثلاجة|غسالة|شاشة|جهاز/;
-  if (!productKeywords.test(query)) return null;
 
   try {
     console.log(`🔍 البحث في زد عن: "${query}"`);
 
     const res = await axios.get(
-      `https://api.zid.sa/v1/products/search`,
+      `https://api.zid.sa/v1/managers/store/products`,
       {
         headers: {
           "X-Manager-Token": ZID_TOKEN,
           "store-id": ZID_STORE_ID,
           "Accept-Language": "ar",
-          "Content-Type": "application/json",
         },
-        params: {
-          q: query,
-          limit: 5,
-        }
+        params: { search: query, per_page: 5 }
       }
     );
 
-    const products = res.data?.products || res.data?.data || [];
+    const products = res.data?.products?.data || res.data?.data || res.data?.products || [];
 
     if (!products.length) {
       console.log("🔍 زد: لا توجد نتائج");
@@ -327,48 +361,25 @@ async function searchZidProducts(query) {
 
     console.log(`✅ زد: وجد ${products.length} منتج`);
 
-    // تنسيق نتائج المنتجات
     const formatted = products.slice(0, 3).map(p => {
-      const price = p.price?.current || p.price || p.sale_price || "غير محدد";
       const name = p.name?.ar || p.name || p.title || "بدون اسم";
-      const available = p.quantity > 0 || p.in_stock ? "متوفر ✅" : "غير متوفر ❌";
-      const url = p.url || p.product_url || "";
+      const price = p.price?.current || p.price || p.sale_price || "غير محدد";
+      const oldPrice = p.price?.old || p.old_price || null;
+      const available = (p.quantity > 0 || p.in_stock === true) ? "متوفر ✅" : "غير متوفر ❌";
+      const url = p.url || p.product_url || p.slug ? `https://ostar.com.sa/products/${p.slug}` : "";
 
-      return `• ${name}\n  السعر: ${price} ريال | ${available}${url ? `\n  الرابط: ${url}` : ""}`;
+      let line = `• ${name}\n  السعر: ${price} ريال`;
+      if (oldPrice && oldPrice !== price) line += ` (كان ${oldPrice} ريال)`;
+      line += ` | ${available}`;
+      if (url) line += `\n  الرابط: ${url}`;
+      return line;
     }).join("\n\n");
 
-    return `[بيانات من متجر زد]\n${formatted}`;
+    return `[بيانات حقيقية من متجر نجوم العمران]\n${formatted}`;
 
   } catch (err) {
     console.error("❌ خطأ في البحث بزد:", err.message);
-    // جرّب endpoint بديل
-    try {
-      const res2 = await axios.get(
-        `https://api.zid.sa/v1/managers/store/products`,
-        {
-          headers: {
-            "X-Manager-Token": ZID_TOKEN,
-            "store-id": ZID_STORE_ID,
-            "Accept-Language": "ar",
-          },
-          params: { search: query, per_page: 5 }
-        }
-      );
-      const products = res2.data?.products?.data || res2.data?.data || [];
-      if (!products.length) return null;
-
-      const formatted = products.slice(0, 3).map(p => {
-        const price = p.price || p.sale_price || "غير محدد";
-        const name = p.name?.ar || p.name || "بدون اسم";
-        const available = (p.quantity > 0 || p.in_stock) ? "متوفر ✅" : "غير متوفر ❌";
-        return `• ${name}\n  السعر: ${price} ريال | ${available}`;
-      }).join("\n\n");
-
-      return `[بيانات من متجر زد]\n${formatted}`;
-    } catch (err2) {
-      console.error("❌ خطأ في البحث البديل بزد:", err2.message);
-      return null;
-    }
+    return null;
   }
 }
 
