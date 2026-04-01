@@ -338,75 +338,50 @@ async function searchZidProducts(query) {
   const ZID_STORE_ID = process.env.ZID_STORE_ID;
   if (!ZID_TOKEN || !ZID_STORE_ID) return null;
 
-  const headers = {
-    "X-Manager-Token": ZID_TOKEN,
-    "store-id": ZID_STORE_ID,
-    "Accept-Language": "ar",
-    "Accept": "application/json",
-  };
+  try {
+    console.log(`🔍 البحث في زد عن: "${query}"`);
 
-  // قائمة endpoints نجربها بالترتيب
-  const endpoints = [
-    {
-      url: `https://api.zid.sa/v1/managers/store/products`,
-      params: { search: query, per_page: 5 }
-    },
-    {
-      url: `https://api.zid.sa/v1/products`,
-      params: { q: query, limit: 5 }
-    },
-    {
-      url: `https://api.zid.sa/v1/managers/products`,
-      params: { search: query, per_page: 5 }
-    },
-  ];
+    const res = await axios.get("https://api.zid.sa/v1/products", {
+      headers: {
+        "X-Manager-Token": ZID_TOKEN,
+        "store-id": ZID_STORE_ID,
+        "Accept-Language": "ar",
+        "Accept": "application/json",
+      },
+      params: { search: query, page_size: 5 }
+    });
 
-  for (const ep of endpoints) {
-    try {
-      console.log(`🔍 جارٍ التجربة: ${ep.url}`);
-      const res = await axios.get(ep.url, { headers, params: ep.params });
+    // البيانات في results
+    const products = res.data?.results || [];
 
-      // استخراج المنتجات من أي شكل للبيانات
-      const products =
-        res.data?.products?.data ||
-        res.data?.products ||
-        res.data?.data?.products ||
-        res.data?.data ||
-        res.data?.items ||
-        [];
-
-      if (!Array.isArray(products) || products.length === 0) {
-        console.log(`🔍 زد: لا توجد نتائج من ${ep.url}`);
-        continue;
-      }
-
-      console.log(`✅ زد: وجد ${products.length} منتج من ${ep.url}`);
-      console.log("📦 نموذج منتج:", JSON.stringify(products[0], null, 2).slice(0, 300));
-
-      const formatted = products.slice(0, 3).map(p => {
-        const name = p.name?.ar || p.name?.en || p.name || p.title || "بدون اسم";
-        const price = p.price?.current || p.sale_price || p.price || p.regular_price || "غير محدد";
-        const oldPrice = p.price?.old || p.compare_price || p.old_price || null;
-        const qty = p.quantity ?? p.stock_quantity ?? p.inventory_quantity;
-        const available = qty === null || qty === undefined || qty > 0 ? "متوفر ✅" : "غير متوفر ❌";
-        const url = p.url || p.product_url || (p.slug ? `https://ostar.com.sa/products/${p.slug}` : "");
-
-        let line = `• ${name}\n  السعر: ${price} ريال`;
-        if (oldPrice && oldPrice !== price) line += ` (كان ${oldPrice} ريال)`;
-        line += ` | ${available}`;
-        if (url) line += `\n  الرابط: ${url}`;
-        return line;
-      }).join("\n\n");
-
-      return `[بيانات حقيقية من متجر نجوم العمران]\n${formatted}`;
-
-    } catch (err) {
-      console.error(`❌ خطأ في ${ep.url}: ${err.response?.status} ${err.message}`);
+    if (!products.length) {
+      console.log("🔍 زد: لا توجد نتائج");
+      return null;
     }
-  }
 
-  console.log("❌ جميع endpoints فشلت");
-  return null;
+    console.log(`✅ زد: وجد ${products.length} منتج`);
+
+    const formatted = products.slice(0, 3).map(p => {
+      const name = p.name?.ar || p.name?.en || p.name || p.title || "بدون اسم";
+      const price = p.price?.current || p.sale_price || p.price || p.regular_price || "غير محدد";
+      const oldPrice = p.price?.old || p.compare_price || p.old_price || null;
+      const qty = p.quantity ?? p.stock_quantity ?? p.inventory_quantity;
+      const available = (qty === null || qty === undefined || qty > 0) ? "متوفر ✅" : "غير متوفر ❌";
+      const url = p.url || p.product_url || (p.slug ? `https://ostar.com.sa/products/${p.slug}` : "");
+
+      let line = `• ${name}\n  السعر: ${price} ريال`;
+      if (oldPrice && oldPrice !== price) line += ` (كان ${oldPrice} ريال)`;
+      line += ` | ${available}`;
+      if (url) line += `\n  الرابط: ${url}`;
+      return line;
+    }).join("\n\n");
+
+    return `[بيانات حقيقية من متجر نجوم العمران]\n${formatted}`;
+
+  } catch (err) {
+    console.error("❌ خطأ في البحث بزد:", err.response?.status, err.message);
+    return null;
+  }
 }
 
 // ==========================================
