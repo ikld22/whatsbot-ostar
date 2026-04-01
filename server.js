@@ -693,16 +693,12 @@ app.get("/api/media/fetch/:mediaId", async (req, res) => {
   }
 });
 
-app.listen(3000, () => {
-  console.log("🚀 الخادم يعمل على المنفذ 3000");
-  console.log("🌐 Webhook URL: http://localhost:3000/webhook");
-});
-
 app.get("/", (req, res) => {
   res.json({ status: "✅ الخادم يعمل", time: new Date().toISOString() });
 });
 
-app.listen(3000, () => {
-  console.log("🚀 الخادم يعمل على المنفذ 3000");
-  console.log("🌐 Webhook URL: http://localhost:3000/webhook");
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 الخادم يعمل على المنفذ ${PORT}`);
+  console.log(`🌐 Webhook URL: https://whatsbot-ostar.onrender.com/webhook`);
 });
