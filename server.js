@@ -435,57 +435,12 @@ async function getConversationHistory(phone) {
 // ==========================================
 
 // محادثات مع الوسائط
-// ==========================================
-// API للمحادثات مع الوسائط (محدث)
-// ==========================================
 app.get("/api/conversations", async (req, res) => {
-  try {
-    // جلب جميع الرسائل
-    const { data: messages } = await supabase
-      .from("messages")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(500);
-
-    // جلب جميع الوسائط
-    const { data: media } = await supabase
-      .from("media")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(500);
-
-    // تجميع الوسائط حسب رقم العميل
-    const mediaByPhone = {};
-    (media || []).forEach(m => {
-      if (!m.customer_phone) return;
-      if (!mediaByPhone[m.customer_phone]) mediaByPhone[m.customer_phone] = [];
-      mediaByPhone[m.customer_phone].push({
-        ...m,
-        media_url: m.media_url || null,
-        media_type: m.media_type,
-        caption: m.caption,
-        created_at: m.created_at
-      });
-    });
-
-    // تجميع الرسائل حسب رقم العميل
-    const messagesByPhone = {};
-    (messages || []).forEach(m => {
-      if (!m.customer_phone) return;
-      if (!messagesByPhone[m.customer_phone]) messagesByPhone[m.customer_phone] = [];
-      messagesByPhone[m.customer_phone].push(m);
-    });
-
-    res.json({
-      messages: messages || [],
-      media: media || [],
-      mediaByPhone,
-      messagesByPhone
-    });
-  } catch (error) {
-    console.error("❌ خطأ في جلب المحادثات:", error);
-    res.json({ messages: [], media: [], mediaByPhone: {}, messagesByPhone: {} });
-  }
+  const { data: msgs } = await supabase.from("messages").select("*")
+    .order("created_at", { ascending: false }).limit(200);
+  const { data: media } = await supabase.from("media").select("*")
+    .order("created_at", { ascending: false }).limit(100);
+  res.json({ messages: msgs || [], media: media || [] });
 });
 
 // وسائط رقم معين
@@ -526,6 +481,55 @@ app.get("/api/templates", async (req, res) => {
 app.post("/api/templates", async (req, res) => {
   const { data } = await supabase.from("templates").insert(req.body).select().single();
   res.json(data);
+});
+
+// أرقام الواتساب المتصلة
+app.get("/api/numbers", async (req, res) => {
+  try {
+    // جلب الأرقام الفريدة من الرسائل مع إحصائياتها
+    const { data: msgs } = await supabase.from("messages").select("customer_phone, whatsapp_number_id, created_at");
+    const { data: waNumbers } = await supabase.from("whatsapp_numbers").select("*");
+
+    // تجميع الإحصائيات لكل رقم
+    const phoneStats = {};
+    (msgs || []).forEach(m => {
+      if (!m.customer_phone) return;
+      if (!phoneStats[m.customer_phone]) {
+        phoneStats[m.customer_phone] = { msgs: 0, lastTime: null, numberId: m.whatsapp_number_id };
+      }
+      phoneStats[m.customer_phone].msgs++;
+      if (!phoneStats[m.customer_phone].lastTime || m.created_at > phoneStats[m.customer_phone].lastTime) {
+        phoneStats[m.customer_phone].lastTime = m.created_at;
+      }
+    });
+
+    const result = Object.entries(phoneStats).map(([phone, stats]) => ({
+      phone,
+      msgs: stats.msgs,
+      lastTime: stats.lastTime,
+      whatsappNumberId: stats.numberId,
+      active: true
+    }));
+
+    res.json({ customers: result, waNumbers: waNumbers || [] });
+  } catch (err) {
+    res.json({ customers: [], waNumbers: [] });
+  }
+});
+
+// AI Chat للتجربة
+app.post("/api/ai/chat", async (req, res) => {
+  try {
+    const { messages } = req.body;
+    const response = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      { model: "claude-sonnet-4-20250514", max_tokens: 500, system: SYSTEM_PROMPT, messages },
+      { headers: { "x-api-key": CONFIG.CLAUDE_API_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json" } }
+    );
+    res.json({ reply: response.data.content[0].text });
+  } catch (err) {
+    res.json({ reply: "عذراً، حدث خطأ في الاتصال بالذكاء الاصطناعي." });
+  }
 });
 
 app.get("/api/appointments", async (req, res) => {
@@ -574,6 +578,124 @@ app.post("/api/summarize", async (req, res) => {
     console.error("❌ خطأ في التلخيص:", err.message);
     res.json({ summary: "" });
   }
+});
+
+// ── أرقام الواتساب المربوطة بـ Meta ──
+app.get("/api/whatsapp-numbers", async (req, res) => {
+  try {
+    // جلب الأرقام من جدول whatsapp_numbers
+    const { data: savedNumbers } = await supabase
+      .from("whatsapp_numbers")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    // جلب إحصائيات كل رقم
+    const numbersWithStats = await Promise.all(
+      (savedNumbers || []).map(async (n) => {
+        const { count: msgCount } = await supabase
+          .from("messages")
+          .select("*", { count: "exact", head: true })
+          .eq("whatsapp_number_id", n.phone_number_id);
+        return { ...n, msgs: msgCount || 0 };
+      })
+    );
+
+    // إذا ما في أرقام محفوظة، جلب الأرقام الفريدة من الرسائل
+    if (numbersWithStats.length === 0) {
+      const { data: msgs } = await supabase
+        .from("messages")
+        .select("customer_phone, created_at")
+        .order("created_at", { ascending: false });
+
+      const phoneMap = {};
+      (msgs || []).forEach(m => {
+        if (!m.customer_phone) return;
+        if (!phoneMap[m.customer_phone]) {
+          phoneMap[m.customer_phone] = { count: 0, last: m.created_at };
+        }
+        phoneMap[m.customer_phone].count++;
+      });
+
+      return res.json(Object.entries(phoneMap).map(([phone, data]) => ({
+        id: phone,
+        phone_number: phone,
+        name: `عميل`,
+        msgs: data.count,
+        is_active: true,
+        last_message: data.last
+      })));
+    }
+
+    res.json(numbersWithStats);
+  } catch (err) {
+    console.error("❌ خطأ في جلب الأرقام:", err.message);
+    res.json([]);
+  }
+});
+
+// ── حذف/إيقاف رقم ──
+app.patch("/api/whatsapp-numbers/:id", async (req, res) => {
+  const { id } = req.params;
+  const { data } = await supabase
+    .from("whatsapp_numbers")
+    .update(req.body)
+    .eq("id", id)
+    .select()
+    .single();
+  res.json(data || {});
+});
+
+// ── AI Chat للداشبورد ──
+app.post("/api/ai/chat", async (req, res) => {
+  try {
+    const { messages } = req.body;
+    const response = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 500,
+        system: SYSTEM_PROMPT,
+        messages: messages.map(m => ({ role: m.role, content: m.content }))
+      },
+      {
+        headers: {
+          "x-api-key": CONFIG.CLAUDE_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json"
+        }
+      }
+    );
+    res.json({ reply: response.data.content[0].text });
+  } catch (err) {
+    console.error("❌ خطأ AI Chat:", err.message);
+    res.json({ reply: "عذراً، حدث خطأ في الاتصال." });
+  }
+});
+
+// ── جلب صورة واتساب (proxy لأن روابط Meta تنتهي) ──
+app.get("/api/media/fetch/:mediaId", async (req, res) => {
+  try {
+    const { mediaId } = req.params;
+    const urlRes = await axios.get(
+      `https://graph.facebook.com/v19.0/${mediaId}`,
+      { headers: { Authorization: `Bearer ${CONFIG.WHATSAPP_TOKEN}` } }
+    );
+    const mediaUrl = urlRes.data.url;
+    const mediaRes = await axios.get(mediaUrl, {
+      responseType: "arraybuffer",
+      headers: { Authorization: `Bearer ${CONFIG.WHATSAPP_TOKEN}` }
+    });
+    res.set("Content-Type", mediaRes.headers["content-type"]);
+    res.set("Cache-Control", "public, max-age=3600");
+    res.send(mediaRes.data);
+  } catch (err) {
+    res.status(404).json({ error: "لم يتم العثور على الوسائط" });
+  }
+});
+
+app.listen(3000, () => {
+  console.log("🚀 الخادم يعمل على المنفذ 3000");
+  console.log("🌐 Webhook URL: http://localhost:3000/webhook");
 });
 
 app.get("/", (req, res) => {
