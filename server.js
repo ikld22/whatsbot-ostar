@@ -275,11 +275,101 @@ app.post("/webhook", async (req, res) => {
 // ==========================================
 async function handleTextMessage(from, text, phoneNumberId) {
   await saveMessage(from, text, "user", phoneNumberId);
+
+  // كشف إذا كان العميل يسأل عن منتج
+  const productContext = await searchZidProducts(text);
+
   const history = await getConversationHistory(from);
-  const aiReply = await getAIResponse(history, text);
+  const aiReply = await getAIResponse(history, text, productContext);
   const finalReply = await processSpecialCommands(aiReply, from, phoneNumberId);
   await sendWhatsAppMessage(from, finalReply, phoneNumberId);
   await saveMessage(from, finalReply, "assistant", phoneNumberId);
+}
+
+// ==========================================
+// 🛒 البحث في متجر زد
+// ==========================================
+async function searchZidProducts(query) {
+  const ZID_TOKEN = process.env.ZID_TOKEN;
+  const ZID_STORE_ID = process.env.ZID_STORE_ID;
+
+  if (!ZID_TOKEN || !ZID_STORE_ID) return null;
+
+  // كلمات تدل على سؤال عن منتج
+  const productKeywords = /بكم|سعر|كم سعر|كم ثمن|يتوفر|عندكم|متوفر|ابغى|احتاج|اشتري|شراء|منتج|موديل|مكيف|ثلاجة|غسالة|شاشة|جهاز/;
+  if (!productKeywords.test(query)) return null;
+
+  try {
+    console.log(`🔍 البحث في زد عن: "${query}"`);
+
+    const res = await axios.get(
+      `https://api.zid.sa/v1/products/search`,
+      {
+        headers: {
+          "X-Manager-Token": ZID_TOKEN,
+          "store-id": ZID_STORE_ID,
+          "Accept-Language": "ar",
+          "Content-Type": "application/json",
+        },
+        params: {
+          q: query,
+          limit: 5,
+        }
+      }
+    );
+
+    const products = res.data?.products || res.data?.data || [];
+
+    if (!products.length) {
+      console.log("🔍 زد: لا توجد نتائج");
+      return null;
+    }
+
+    console.log(`✅ زد: وجد ${products.length} منتج`);
+
+    // تنسيق نتائج المنتجات
+    const formatted = products.slice(0, 3).map(p => {
+      const price = p.price?.current || p.price || p.sale_price || "غير محدد";
+      const name = p.name?.ar || p.name || p.title || "بدون اسم";
+      const available = p.quantity > 0 || p.in_stock ? "متوفر ✅" : "غير متوفر ❌";
+      const url = p.url || p.product_url || "";
+
+      return `• ${name}\n  السعر: ${price} ريال | ${available}${url ? `\n  الرابط: ${url}` : ""}`;
+    }).join("\n\n");
+
+    return `[بيانات من متجر زد]\n${formatted}`;
+
+  } catch (err) {
+    console.error("❌ خطأ في البحث بزد:", err.message);
+    // جرّب endpoint بديل
+    try {
+      const res2 = await axios.get(
+        `https://api.zid.sa/v1/managers/store/products`,
+        {
+          headers: {
+            "X-Manager-Token": ZID_TOKEN,
+            "store-id": ZID_STORE_ID,
+            "Accept-Language": "ar",
+          },
+          params: { search: query, per_page: 5 }
+        }
+      );
+      const products = res2.data?.products?.data || res2.data?.data || [];
+      if (!products.length) return null;
+
+      const formatted = products.slice(0, 3).map(p => {
+        const price = p.price || p.sale_price || "غير محدد";
+        const name = p.name?.ar || p.name || "بدون اسم";
+        const available = (p.quantity > 0 || p.in_stock) ? "متوفر ✅" : "غير متوفر ❌";
+        return `• ${name}\n  السعر: ${price} ريال | ${available}`;
+      }).join("\n\n");
+
+      return `[بيانات من متجر زد]\n${formatted}`;
+    } catch (err2) {
+      console.error("❌ خطأ في البحث البديل بزد:", err2.message);
+      return null;
+    }
+  }
 }
 
 // ==========================================
@@ -358,16 +448,28 @@ async function handleMediaMessage(from, msg, mediaType, phoneNumberId) {
 }
 
 // ==========================================
-// 5. الذكاء الاصطناعي
+// 5. الذكاء الاصطناعي (مع بيانات زد)
 // ==========================================
-async function getAIResponse(history, newMessage) {
+async function getAIResponse(history, newMessage, productContext = null) {
   const messages = [
     ...history.map(m => ({ role: m.role, content: m.content })),
     { role: "user", content: newMessage }
   ];
+
+  // إضافة بيانات المنتج من زد إذا كانت موجودة
+  let systemWithZid = SYSTEM_PROMPT;
+  if (productContext) {
+    systemWithZid += `\n\n═══════════════════════════════════════════════════
+🛒 نتائج البحث في متجر زد (استخدمها للرد على العميل)
+═══════════════════════════════════════════════════
+${productContext}
+
+⚠️ استخدم هذه البيانات للرد — اذكر السعر والتوفر بوضوح واللهجة السعودية الودودة.
+إذا المنتج متوفر وعنده سعر، أذكر للعميل كود VIP5 للخصم 5%.`;
+  }
   const response = await axios.post(
     "https://api.anthropic.com/v1/messages",
-    { model: "claude-sonnet-4-20250514", max_tokens: 500, system: SYSTEM_PROMPT, messages },
+    { model: "claude-sonnet-4-20250514", max_tokens: 500, system: systemWithZid, messages },
     { headers: { "x-api-key": CONFIG.CLAUDE_API_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json" } }
   );
   const reply = response.data.content[0].text;
