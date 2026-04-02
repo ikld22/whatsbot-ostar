@@ -363,15 +363,16 @@ async function searchZidProducts(query) {
     console.log("📦 نموذج منتج:", JSON.stringify(products[0], null, 2).slice(0, 500));
 
     const formatted = products.slice(0, 3).map(p => {
-      const name = p.name?.ar || p.name?.en || p.name || p.title || "بدون اسم";
-      const price = p.price?.current || p.sale_price || p.price || p.regular_price || "غير محدد";
-      const oldPrice = p.price?.old || p.compare_price || p.old_price || null;
-      const qty = p.quantity ?? p.stock_quantity ?? p.inventory_quantity;
+      const name = p.name || p.title || "بدون اسم";
+      // price و sale_price أرقام مباشرة
+      const price = p.sale_price || p.price || "غير محدد";
+      const oldPrice = (p.sale_price && p.price && p.sale_price < p.price) ? p.price : null;
+      const qty = p.quantity ?? p.stock_quantity;
       const available = (qty === null || qty === undefined || qty > 0) ? "متوفر ✅" : "غير متوفر ❌";
-      const url = p.url || p.product_url || (p.slug ? `https://ostar.com.sa/products/${p.slug}` : "");
+      const url = p.slug ? `https://ostar.com.sa/products/${p.slug}` : "";
 
       let line = `• ${name}\n  السعر: ${price} ريال`;
-      if (oldPrice && oldPrice !== price) line += ` (كان ${oldPrice} ريال)`;
+      if (oldPrice) line += ` (كان ${oldPrice} ريال)`;
       line += ` | ${available}`;
       if (url) line += `\n  الرابط: ${url}`;
       return line;
