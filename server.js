@@ -696,7 +696,7 @@ async function getAIResponse(history, newMessage, productContext = null, faultCo
 ${productContext}
 اذكر السعر والتوفر بوضوح، وذكّر بكود VIP5 للخصم 5%.`;
   }
-  }
+
   const response = await axios.post(
     "https://api.anthropic.com/v1/messages",
     { model: "claude-sonnet-4-20250514", max_tokens: 500, system: systemWithContext, messages },
