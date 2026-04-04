@@ -305,7 +305,27 @@ app.post("/webhook", async (req, res) => {
 
     // معالجة حسب نوع الرسالة
     if (msgType === "text") {
-      await handleTextMessage(from, msg.text.body, phoneNumberId);
+      const msgText = msg.text.body;
+
+      // كشف رد استطلاع الرضا
+      if (humanHandoffs[from]?.awaitingSatisfaction) {
+        const satisfied = msgText.trim() === "1" || msgText.includes("نعم") || msgText.includes("تم");
+        humanHandoffs[from].awaitingSatisfaction = false;
+        humanHandoffs[from].satisfied = satisfied;
+
+        if (satisfied) {
+          // راضٍ — يمكن للموظف إغلاق المحادثة
+          await sendWhatsAppMessage(from, "ممتاز! سعداء بخدمتك 🌟 سيتم إغلاق المحادثة من قِبل الموظف.", phoneNumberId);
+          await saveMessage(from, "[العميل راضٍ ✅ — بانتظار إغلاق الموظف]", "assistant", phoneNumberId);
+        } else {
+          // غير راضٍ — لا تغلق، يكمل الموظف
+          await sendWhatsAppMessage(from, "نعتذر عن ذلك 🙏 سيستمر الموظف في مساعدتك.", phoneNumberId);
+          await saveMessage(from, "[العميل غير راضٍ ❌ — المحادثة مستمرة]", "assistant", phoneNumberId);
+        }
+        return;
+      }
+
+      await handleTextMessageWithHandoff(from, msgText, phoneNumberId);
     } else if (msgType === "image" || msgType === "video" || msgType === "document" || msgType === "audio") {
       await handleMediaMessage(from, msg, msgType, phoneNumberId);
     } else {
@@ -1104,6 +1124,218 @@ app.get("/api/media/fetch/:mediaId", async (req, res) => {
     res.send(mediaRes.data);
   } catch (err) {
     res.status(404).json({ error: "لم يتم العثور على الوسائط" });
+  }
+});
+
+// ==========================================
+// 📧 SMTP — إرسال البريد الإلكتروني
+// ==========================================
+const nodemailer = require("nodemailer");
+
+const emailTransporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || "smtp.gmail.com",
+  port: parseInt(process.env.SMTP_PORT || "587"),
+  secure: false,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
+
+async function sendEmail(to, subject, html) {
+  if (!process.env.SMTP_USER) return;
+  try {
+    await emailTransporter.sendMail({
+      from: `"نجوم العمران" <${process.env.SMTP_USER}>`,
+      to, subject, html
+    });
+    console.log(`📧 إيميل أُرسل إلى ${to}`);
+  } catch (e) {
+    console.error("❌ خطأ في إرسال الإيميل:", e.message);
+  }
+}
+
+// ==========================================
+// 🤝 نظام التحويل للموظف البشري
+// ==========================================
+
+// جدول المحادثات المحولة للموظفين
+// { phone: { agentMode: true, agentName, agentId, startedAt } }
+const humanHandoffs = {};
+
+// تحقق إذا المحادثة محولة لموظف
+function isHumanMode(phone) {
+  return humanHandoffs[phone]?.agentMode === true;
+}
+
+// تحويل محادثة لموظف بشري
+async function activateHumanMode(phone, agentId, agentName) {
+  humanHandoffs[phone] = {
+    agentMode: true,
+    agentId,
+    agentName,
+    startedAt: new Date().toISOString()
+  };
+  console.log(`🤝 تحويل ${phone} للموظف ${agentName}`);
+}
+
+// إنهاء وضع الموظف
+function deactivateHumanMode(phone) {
+  delete humanHandoffs[phone];
+}
+
+// ==========================================
+// 🔄 تحديث معالج الرسائل — يدعم وضع الموظف
+// ==========================================
+const originalHandleText = handleTextMessage;
+
+// إعادة تعريف معالج الرسائل ليتحقق من وضع الموظف أولاً
+async function handleTextMessageWithHandoff(from, text, phoneNumberId) {
+  // لو المحادثة محولة لموظف — لا تتدخل البوت
+  if (isHumanMode(from)) {
+    console.log(`👤 وضع الموظف نشط للرقم ${from} — البوت متوقف`);
+    await saveMessage(from, text, "user", phoneNumberId);
+    // إشعار الموظف برسالة جديدة (عبر API الداشبورد)
+    return;
+  }
+  await handleTextMessage(from, text, phoneNumberId);
+}
+
+// ==========================================
+// API — تحويل لموظف بشري
+// ==========================================
+app.post("/api/handoff/activate", async (req, res) => {
+  const { phone, agentId, agentName, phoneNumberId } = req.body;
+  if (!phone) return res.status(400).json({ error: "phone مطلوب" });
+
+  await activateHumanMode(phone, agentId, agentName);
+
+  // أرسل رسالة للعميل
+  try {
+    await sendWhatsAppMessage(phone, `يا هلا 🌟 تم تحويلك لأحد ممثلي خدمة العملاء، سيتواصل معك ${agentName} الآن.`, phoneNumberId);
+    await saveMessage(phone, `[تحويل للموظف: ${agentName}]`, "assistant", phoneNumberId);
+  } catch {}
+
+  res.json({ success: true, message: `تم تحويل ${phone} للموظف ${agentName}` });
+});
+
+// API — إرسال رسالة من الموظف
+app.post("/api/handoff/send", async (req, res) => {
+  const { phone, message, agentName, phoneNumberId } = req.body;
+  if (!phone || !message) return res.status(400).json({ error: "phone و message مطلوبان" });
+
+  try {
+    await sendWhatsAppMessage(phone, message, phoneNumberId);
+    await saveMessage(phone, `[${agentName}]: ${message}`, "assistant", phoneNumberId);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// API — استطلاع رضا العميل
+app.post("/api/handoff/satisfaction", async (req, res) => {
+  const { phone, phoneNumberId } = req.body;
+  if (!phone) return res.status(400).json({ error: "phone مطلوب" });
+
+  const surveyMsg = `شكراً لتواصلك مع نجوم العمران 🌟\n\nهل تم حل مشكلتك بشكل كامل؟\n\n1️⃣ نعم، تم الحل ✅\n2️⃣ لا، ما زالت المشكلة موجودة ❌\n\nاختر رقماً للرد`;
+
+  try {
+    await sendWhatsAppMessage(phone, surveyMsg, phoneNumberId);
+    await saveMessage(phone, surveyMsg, "assistant", phoneNumberId);
+    // حفظ انتظار الرد
+    humanHandoffs[phone] = { ...humanHandoffs[phone], awaitingSatisfaction: true };
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// API — إغلاق المحادثة من الموظف
+app.post("/api/handoff/close", async (req, res) => {
+  const { phone, agentId, agentName, ticketId, phoneNumberId, satisfied } = req.body;
+  if (!phone) return res.status(400).json({ error: "phone مطلوب" });
+
+  try {
+    // رسالة إغلاق للعميل
+    const closeMsg = satisfied
+      ? `شكراً لثقتك في نجوم العمران 🌟\nتم إغلاق طلبك بنجاح. نسعد بخدمتك دائماً 🌿`
+      : `تم تسجيل طلبك وسيتابع فريقنا معك قريباً 🌿\nشكراً لصبرك وتفهمك 🌟`;
+
+    await sendWhatsAppMessage(phone, closeMsg, phoneNumberId);
+    await saveMessage(phone, closeMsg, "assistant", phoneNumberId);
+
+    // تحديث التذكرة
+    if (ticketId) {
+      await supabase.from("tickets").update({
+        status: "مغلق",
+        notes: `أُغلق بواسطة الموظف: ${agentName} | رضا العميل: ${satisfied ? "راضٍ ✅" : "غير راضٍ ❌"}`,
+        updated_at: new Date().toISOString()
+      }).eq("id", ticketId);
+    }
+
+    // حفظ في جدول إغلاق المحادثات
+    await supabase.from("conversation_closures").insert({
+      customer_phone: phone,
+      agent_id: agentId,
+      agent_name: agentName,
+      ticket_id: ticketId || null,
+      satisfied: satisfied || false,
+      closed_at: new Date().toISOString()
+    }).catch(() => {}); // تجاهل لو الجدول ما موجود
+
+    // إيقاف وضع الموظف
+    deactivateHumanMode(phone);
+
+    // إشعار بريدي للمدير
+    if (process.env.MANAGER_EMAIL) {
+      await sendEmail(
+        process.env.MANAGER_EMAIL,
+        `إغلاق محادثة — ${phone}`,
+        `<div dir="rtl" style="font-family:Arial">
+          <h3>تم إغلاق محادثة</h3>
+          <p><b>العميل:</b> ${phone}</p>
+          <p><b>الموظف:</b> ${agentName}</p>
+          <p><b>رضا العميل:</b> ${satisfied ? "✅ راضٍ" : "❌ غير راضٍ"}</p>
+          <p><b>وقت الإغلاق:</b> ${new Date().toLocaleString("ar-SA")}</p>
+        </div>`
+      );
+    }
+
+    console.log(`🔒 إغلاق محادثة ${phone} بواسطة ${agentName} | رضا: ${satisfied}`);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// API — حالة المحادثات المحولة
+app.get("/api/handoff/active", (req, res) => {
+  const active = Object.entries(humanHandoffs).map(([phone, data]) => ({ phone, ...data }));
+  res.json(active);
+});
+
+// API — إرسال إيميل
+app.post("/api/email/send", async (req, res) => {
+  const { to, subject, html } = req.body;
+  try {
+    await sendEmail(to, subject, html);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// API — إحصائيات الإغلاق للتقارير
+app.get("/api/reports/closures", async (req, res) => {
+  try {
+    const { data } = await supabase.from("conversation_closures")
+      .select("*")
+      .order("closed_at", { ascending: false })
+      .limit(100);
+    res.json(data || []);
+  } catch {
+    res.json([]);
   }
 });
 
