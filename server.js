@@ -124,6 +124,22 @@ function buildProductClarificationReply() {
   return "حياك الله 🌟 للتأكد من إعطائك المنتج الصحيح، نحتاج تحديد بسيط: نوع المنتج أو الماركة أو المقاس (مثال: مكيف سبليت 18 جري أو شاشة 55 بوصة).";
 }
 
+function formatWhatsAppReply(text = "") {
+  let out = String(text || "").trim();
+
+  // فصل العناصر الرئيسية في ردود المنتجات لتكون أوضح للعميل.
+  out = out
+    .replace(/\s*\*\*الخيارات المتوفرة حالياً:\*\*/g, "\n\n**الخيارات المتوفرة حالياً:**")
+    .replace(/\s+•\s*/g, "\n\n• ")
+    .replace(/\s+(استخدم كود\s*\*\*VIP5\*\*)/g, "\n\n$1")
+    .replace(/\s+(تبغى\s+)/g, "\n\nتبغى ")
+    .replace(/\s+(https?:\/\/\S+)/g, "\n$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return out;
+}
+
 function tokenizeQuery(text = "") {
   const stopWords = new Set([
     "ابغى", "ابي", "أبي", "أبغى", "اريد", "أريد", "عندي", "عن", "على", "في", "من", "الى", "إلى",
@@ -151,16 +167,76 @@ function scoreProductMatch(product, queryTokens) {
   return score;
 }
 
+const UPSET_TERMS = [
+  "زعلان", "معصب", "مقهور", "مو راضي", "غير راضي", "سيء", "سيئ", "مستاء",
+  "ما استفدت", "ما نفع", "فاشل", "شكوى", "بشتكي", "ماني راضي", "مو عاجبني"
+];
+
+const UNRESOLVED_REPLY_TERMS = [
+  "عذرا", "حدث خطا", "ما اقدر", "لا استطيع", "غير متاح حاليا", "لم افهم", "احتاج تفاصيل اكثر"
+];
+
+function hasAnyNormalizedTerm(text = "", terms = []) {
+  const normalized = normalizeArabic(text);
+  return terms.some((term) => normalized.includes(normalizeArabic(term)));
+}
+
+function isUpsetCustomerMessage(text = "") {
+  return hasAnyNormalizedTerm(text, UPSET_TERMS);
+}
+
+function isUnresolvedAIReply(text = "") {
+  return hasAnyNormalizedTerm(text, UNRESOLVED_REPLY_TERMS);
+}
+
+function shouldAutoCloseByAI(userText, aiReply) {
+  if (isMaintenanceRequest(userText)) return { close: false, escalate: false };
+  if (isUpsetCustomerMessage(userText)) return { close: false, escalate: true };
+  if (isUnresolvedAIReply(aiReply)) return { close: false, escalate: true };
+  return { close: true, escalate: false };
+}
+
+async function hasRecentClosure(phone, minutes = 30) {
+  try {
+    const { data, error } = await supabase
+      .from("conversation_closures")
+      .select("closed_at")
+      .eq("customer_phone", phone)
+      .order("closed_at", { ascending: false })
+      .limit(1);
+
+    if (error || !data?.length || !data[0]?.closed_at) return false;
+    const last = new Date(data[0].closed_at).getTime();
+    if (Number.isNaN(last)) return false;
+    return Date.now() - last < minutes * 60 * 1000;
+  } catch {
+    return false;
+  }
+}
+
+async function saveConversationClosure({ phone, agentId, agentName, ticketId = null, satisfied = false }) {
+  await supabase.from("conversation_closures").insert({
+    customer_phone: phone,
+    agent_id: agentId,
+    agent_name: agentName,
+    ticket_id: ticketId || null,
+    satisfied: !!satisfied,
+    closed_at: new Date().toISOString()
+  }).catch(() => {});
+}
+
 const PRODUCT_REPLY_FORMAT_RULES = `
 📌 عند وجود نتائج منتجات من زد التزم بهذا القالب حرفياً قدر الإمكان:
 1) سطر ترحيب قصير جداً.
 2) عنوان: "الخيارات المتوفرة حالياً:".
 3) اعرض حتى منتجين فقط، وكل منتج في 3 أسطر كحد أقصى:
    - الاسم المختصر
-   - السعر الحالي (والسعر السابق إن وجد)
+  - السعر الحالي (والسعر السابق إن وجد) بشكل واضح
    - حالة التوفر + الرابط
-4) سطر خصم VIP5 بشكل مختصر.
-5) سطر ختامي بسؤال تفضيل العميل (مثال: تبغى 18 أو 24؟).
+4) أضف سطر واضح: "الأسعار من المتجر الإلكتروني وقت الرد وقد تتغير".
+5) سطر خصم VIP5 بشكل مختصر.
+6) أضف رابط المتجر العام: https://ostar.com.sa
+7) سطر ختامي بسؤال تفضيل العميل (مثال: تبغى 18 أو 24؟).
 
 ضوابط مهمة:
 - لا تكرر نفس المنتج بصيغ مختلفة.
@@ -399,18 +475,26 @@ app.post("/webhook", async (req, res) => {
 
       // كشف رد استطلاع الرضا
       if (humanHandoffs[from]?.awaitingSatisfaction) {
-        const satisfied = msgText.trim() === "1" || msgText.includes("نعم") || msgText.includes("تم");
+        const ratingMatch = msgText.trim().match(/^[1-5]$/);
+        if (!ratingMatch) {
+          const askAgain = "يسعدنا تقييمك من 1 إلى 5 🌟\n1 = غير راضٍ تماماً\n5 = راضٍ جداً";
+          await sendWhatsAppMessage(from, askAgain, phoneNumberId);
+          await saveMessage(from, askAgain, "assistant", phoneNumberId);
+          return;
+        }
+
+        const rating = parseInt(ratingMatch[0], 10);
+        const satisfied = rating >= 4;
         humanHandoffs[from].awaitingSatisfaction = false;
         humanHandoffs[from].satisfied = satisfied;
+        humanHandoffs[from].rating = rating;
 
         if (satisfied) {
-          // راضٍ — يمكن للموظف إغلاق المحادثة
-          await sendWhatsAppMessage(from, "ممتاز! سعداء بخدمتك 🌟 سيتم إغلاق المحادثة من قِبل الموظف.", phoneNumberId);
-          await saveMessage(from, "[العميل راضٍ ✅ — بانتظار إغلاق الموظف]", "assistant", phoneNumberId);
+          await sendWhatsAppMessage(from, `شكراً لك على تقييمك ${rating}/5 🌟\nتم تسجيله، وسيقوم الموظف بإغلاق المحادثة.`, phoneNumberId);
+          await saveMessage(from, `[تقييم العميل: ${rating}/5 ✅ — بانتظار إغلاق الموظف]`, "assistant", phoneNumberId);
         } else {
-          // غير راضٍ — لا تغلق، يكمل الموظف
-          await sendWhatsAppMessage(from, "نعتذر عن ذلك 🙏 سيستمر الموظف في مساعدتك.", phoneNumberId);
-          await saveMessage(from, "[العميل غير راضٍ ❌ — المحادثة مستمرة]", "assistant", phoneNumberId);
+          await sendWhatsAppMessage(from, `نعتذر لك 🙏 تم تسجيل تقييمك ${rating}/5 وسيستمر الموظف في مساعدتك حتى الرضا.`, phoneNumberId);
+          await saveMessage(from, `[تقييم العميل: ${rating}/5 ❌ — المحادثة مستمرة]`, "assistant", phoneNumberId);
         }
         return;
       }
@@ -488,10 +572,11 @@ async function handleTextMessage(from, text, phoneNumberId) {
       const faultContext = buildFaultContext(directCode, filteredFaults);
       const aiReply = await getAIResponse(history, text, null, faultContext);
       const finalReply = await processSpecialCommands(aiReply, from, phoneNumberId);
+      const formattedReply = formatWhatsAppReply(finalReply);
 
       await createDetailedTicket(from, directCode, filteredFaults[0], customerInfo, detectedBrand);
-      await sendWhatsAppMessage(from, finalReply, phoneNumberId);
-      await saveMessage(from, finalReply, "assistant", phoneNumberId);
+      await sendWhatsAppMessage(from, formattedReply, phoneNumberId);
+      await saveMessage(from, formattedReply, "assistant", phoneNumberId);
       return;
     }
   }
@@ -521,8 +606,32 @@ async function handleTextMessage(from, text, phoneNumberId) {
   const productContext = productQuery ? await searchZidProducts(productQuery) : null;
   const aiReply = await getAIResponse(history, text, productContext, null);
   const finalReply = await processSpecialCommands(aiReply, from, phoneNumberId);
-  await sendWhatsAppMessage(from, finalReply, phoneNumberId);
-  await saveMessage(from, finalReply, "assistant", phoneNumberId);
+  const formattedReply = formatWhatsAppReply(finalReply);
+  await sendWhatsAppMessage(from, formattedReply, phoneNumberId);
+  await saveMessage(from, formattedReply, "assistant", phoneNumberId);
+
+  const closeDecision = shouldAutoCloseByAI(text, formattedReply);
+  if (closeDecision.escalate) {
+    await activateHumanMode(from, "AUTO_ESCALATION", "الموظف المختص");
+    const escalateMsg = "أعتذر إذا ما كان الرد كافي 🙏 تم تحويل محادثتك مباشرة للموظف المختص لمتابعة حالتك حتى الحل.";
+    await sendWhatsAppMessage(from, escalateMsg, phoneNumberId);
+    await saveMessage(from, "[تصعيد تلقائي للموظف بسبب عدم الرضا/عدم وضوح الحل]", "assistant", phoneNumberId);
+    await saveMessage(from, escalateMsg, "assistant", phoneNumberId);
+    return;
+  }
+
+  if (closeDecision.close) {
+    const recentlyClosed = await hasRecentClosure(from, 30);
+    if (!recentlyClosed) {
+      await saveConversationClosure({
+        phone: from,
+        agentId: "AI",
+        agentName: "AI_AUTO",
+        satisfied: true
+      });
+      await saveMessage(from, "[إغلاق تلقائي بواسطة AI]", "assistant", phoneNumberId);
+    }
+  }
 }
 
 // ── استخراج بيانات العميل من التاريخ ──────────────────────────
@@ -724,7 +833,7 @@ async function searchZidProducts(query) {
       return line;
     }).join("\n\n");
 
-    return `[بيانات حقيقية من متجر نجوم العمران]\n${formatted}`;
+    return `[بيانات حقيقية من متجر نجوم العمران]\n${formatted}\n\nالأسعار من المتجر الإلكتروني وقت الرد وقد تتغير.\nرابط المتجر: https://ostar.com.sa`;
 
   } catch (err) {
     console.error("❌ خطأ في البحث بزد:", err.response?.status, err.message);
@@ -832,7 +941,9 @@ async function getAIResponse(history, newMessage, productContext = null, faultCo
 🛒 نتائج البحث في متجر زد
 ═══════════════════════════════════════════════════
 ${productContext}
-اذكر السعر والتوفر بوضوح، وذكّر بكود VIP5 للخصم 5%.
+اذكر بوضوح: السعر الحالي + السعر السابق (إن وجد) + أن الأسعار من المتجر الإلكتروني وقت الرد.
+ضع رابط المنتج لكل خيار + رابط المتجر العام https://ostar.com.sa.
+وذكّر بكود VIP5 للخصم 5%.
 ${PRODUCT_REPLY_FORMAT_RULES}`;
   }
 
@@ -1074,7 +1185,8 @@ app.post("/api/ai/chat", async (req, res) => {
 ═══════════════════════════════════════════════════
 ${productContext}
 
-⚠️ استخدم هذه البيانات للرد — اذكر السعر والتوفر بوضوح واللهجة السعودية الودودة.
+⚠️ استخدم هذه البيانات للرد — اذكر السعر الحالي والسعر السابق (إن وجد) والتوفر بوضوح.
+أوضح أن الأسعار من المتجر الإلكتروني وقت الرد، وضع رابط المتجر العام: https://ostar.com.sa.
 إذا المنتج متوفر وعنده سعر، اذكر كود VIP5 للخصم 5%.
 ${PRODUCT_REPLY_FORMAT_RULES}`;
     }
@@ -1084,7 +1196,8 @@ ${PRODUCT_REPLY_FORMAT_RULES}`;
       { model: "claude-sonnet-4-20250514", max_tokens: 500, system: systemWithZid, messages },
       { headers: { "x-api-key": CONFIG.CLAUDE_API_KEY, "anthropic-version": "2023-06-01", "Content-Type": "application/json" } }
     );
-    res.json({ reply: response.data.content[0].text });
+    const formattedReply = formatWhatsAppReply(response.data.content[0].text);
+    res.json({ reply: formattedReply });
   } catch (err) {
     res.json({ reply: "عذراً، حدث خطأ في الاتصال." });
   }
@@ -1223,7 +1336,8 @@ app.post("/api/ai/chat", async (req, res) => {
         }
       }
     );
-    res.json({ reply: response.data.content[0].text });
+    const formattedReply = formatWhatsAppReply(response.data.content[0].text);
+    res.json({ reply: formattedReply });
   } catch (err) {
     console.error("❌ خطأ AI Chat:", err.message);
     res.json({ reply: "عذراً، حدث خطأ في الاتصال." });
@@ -1362,7 +1476,7 @@ app.post("/api/handoff/satisfaction", async (req, res) => {
   const { phone, phoneNumberId } = req.body;
   if (!phone) return res.status(400).json({ error: "phone مطلوب" });
 
-  const surveyMsg = `شكراً لتواصلك مع نجوم العمران 🌟\n\nهل تم حل مشكلتك بشكل كامل؟\n\n1️⃣ نعم، تم الحل ✅\n2️⃣ لا، ما زالت المشكلة موجودة ❌\n\nاختر رقماً للرد`;
+  const surveyMsg = `شكراً لتواصلك مع نجوم العمران 🌟\n\nنأمل تقييم تجربتك من 1 إلى 5:\n1️⃣ غير راضٍ جداً\n2️⃣ غير راضٍ\n3️⃣ مقبول\n4️⃣ راضٍ\n5️⃣ راضٍ جداً\n\nاكتب الرقم فقط`;
 
   try {
     await sendWhatsAppMessage(phone, surveyMsg, phoneNumberId);
@@ -1390,23 +1504,24 @@ app.post("/api/handoff/close", async (req, res) => {
     await saveMessage(phone, closeMsg, "assistant", phoneNumberId);
 
     // تحديث التذكرة
+    const ratingValue = humanHandoffs[phone]?.rating;
     if (ticketId) {
       await supabase.from("tickets").update({
         status: "مغلق",
-        notes: `أُغلق بواسطة الموظف: ${agentName} | رضا العميل: ${satisfied ? "راضٍ ✅" : "غير راضٍ ❌"}`,
+        notes: `أُغلق بواسطة الموظف: ${agentName} | رضا العميل: ${satisfied ? "راضٍ ✅" : "غير راضٍ ❌"}${ratingValue ? ` | التقييم: ${ratingValue}/5` : ""}`,
         updated_at: new Date().toISOString()
       }).eq("id", ticketId);
     }
 
-    // حفظ في جدول إغلاق المحادثات
-    await supabase.from("conversation_closures").insert({
-      customer_phone: phone,
-      agent_id: agentId,
-      agent_name: agentName,
-      ticket_id: ticketId || null,
-      satisfied: satisfied || false,
-      closed_at: new Date().toISOString()
-    }).catch(() => {}); // تجاهل لو الجدول ما موجود
+    // حفظ في جدول إغلاق المحادثات (تقييم 5/5 يظهر ضمن اسم الموظف في التقرير)
+    const reportAgentName = ratingValue ? `${agentName} | Rating:${ratingValue}/5` : agentName;
+    await saveConversationClosure({
+      phone,
+      agentId,
+      agentName: reportAgentName,
+      ticketId,
+      satisfied: satisfied || false
+    });
 
     // إيقاف وضع الموظف
     deactivateHumanMode(phone);
@@ -1461,6 +1576,19 @@ app.get("/api/reports/closures", async (req, res) => {
   } catch {
     res.json([]);
   }
+});
+
+app.get("/api/reports/pending-handoffs", (req, res) => {
+  const pending = Object.entries(humanHandoffs).map(([phone, data]) => ({
+    phone,
+    status: data.agentMode ? "قيد متابعة الموظف" : "غير نشط",
+    reason: data.agentId === "AUTO_ESCALATION" ? "تصعيد تلقائي من AI" : "تحويل يدوي",
+    agentName: data.agentName || "-",
+    rating: data.rating || null,
+    awaitingSatisfaction: !!data.awaitingSatisfaction,
+    startedAt: data.startedAt || null,
+  }));
+  res.json(pending);
 });
 
 app.get("/", (req, res) => {
