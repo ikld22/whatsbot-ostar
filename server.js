@@ -88,7 +88,8 @@ const PRODUCT_INTENT_TERMS = [
 
 const PRODUCT_CATEGORY_TERMS = [
   "مكيف", "سبليت", "شباك", "دكت", "مركزي", "غسالة", "ثلاجة", "مجفف", "فرن", "مايكرويف", "مايكروويف",
-  "شاشة", "جوال", "تابلت", "لابتوب", "قطع غيار", "مروحة", "ستارة هوائية"
+  "شاشة", "جوال", "تابلت", "لابتوب", "قطع غيار", "مروحة", "ستارة هوائية",
+  "قهوة", "اله قهوه", "آلة قهوة", "ماكينه قهوه", "ماكينة قهوة", "محضره قهوه", "محضرة قهوة", "اسبريسو", "espresso"
 ];
 
 const BRAND_TERMS = ["جري", "gree", "aux", "اوكس", "أوكس", "lg", "ال جي", "ميديا", "سامسونج", "tcl", "هايسنس"];
@@ -117,7 +118,8 @@ function isSpecificProductRequest(text) {
   const hasCategory = includesAny(t, PRODUCT_CATEGORY_TERMS);
   const hasBrand = includesAny(t, BRAND_TERMS);
   const hasSpec = /(\d|حصان|طن|بوصه|بوصة|انش|موديل|حار|بارد|inverter)/i.test(t);
-  return hasCategory || hasBrand || hasSpec;
+  const hasCoffeePattern = /(قهوه|قهوة).*(اله|آلة|ماكينه|ماكينة|محضره|محضرة)|(اله|آلة|ماكينه|ماكينة|محضره|محضرة).*(قهوه|قهوة)/i.test(t);
+  return hasCategory || hasBrand || hasSpec || hasCoffeePattern;
 }
 
 function buildProductClarificationReply() {
@@ -223,6 +225,35 @@ async function saveConversationClosure({ phone, agentId, agentName, ticketId = n
     satisfied: !!satisfied,
     closed_at: new Date().toISOString()
   }).catch(() => {});
+}
+
+function parseDateRange(req) {
+  const now = new Date();
+  const fromQ = req.query.from;
+  const toQ = req.query.to;
+
+  const to = toQ ? new Date(toQ) : now;
+  const from = fromQ ? new Date(fromQ) : new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    return null;
+  }
+
+  return {
+    fromIso: from.toISOString(),
+    toIso: to.toISOString(),
+  };
+}
+
+function detectMessageSource(content = "") {
+  const text = String(content || "").trim();
+  if (/^\[[^\]]+\]:/.test(text)) return "employee";
+  if (/^\[(تصعيد|تحويل|إغلاق|تقييم|العميل)/.test(text)) return "system";
+  return "ai";
+}
+
+function baseAgentName(name = "") {
+  return String(name || "").split(" | Rating:")[0].trim();
 }
 
 const PRODUCT_REPLY_FORMAT_RULES = `
@@ -1589,6 +1620,134 @@ app.get("/api/reports/pending-handoffs", (req, res) => {
     startedAt: data.startedAt || null,
   }));
   res.json(pending);
+});
+
+// API — تقرير أداء شامل حسب فترة زمنية
+app.get("/api/reports/performance", async (req, res) => {
+  const range = parseDateRange(req);
+  if (!range) {
+    return res.status(400).json({ error: "صيغة التاريخ غير صحيحة. استخدم from و to بصيغة ISO" });
+  }
+
+  try {
+    const { data: msgs } = await supabase
+      .from("messages")
+      .select("customer_phone, content, role, created_at")
+      .gte("created_at", range.fromIso)
+      .lte("created_at", range.toIso)
+      .order("created_at", { ascending: true });
+
+    const { data: closures } = await supabase
+      .from("conversation_closures")
+      .select("customer_phone, agent_id, agent_name, ticket_id, satisfied, closed_at")
+      .gte("closed_at", range.fromIso)
+      .lte("closed_at", range.toIso)
+      .order("closed_at", { ascending: false });
+
+    const { data: tickets } = await supabase
+      .from("tickets")
+      .select("id, customer_phone, status, notes, updated_at, created_at")
+      .gte("created_at", range.fromIso)
+      .lte("created_at", range.toIso)
+      .order("created_at", { ascending: false });
+
+    const byCustomer = new Map();
+    for (const m of (msgs || [])) {
+      const phone = m.customer_phone;
+      if (!phone) continue;
+      if (!byCustomer.has(phone)) {
+        byCustomer.set(phone, {
+          phone,
+          userMessages: 0,
+          assistantMessages: 0,
+          aiReplies: 0,
+          employeeReplies: 0,
+          firstAt: m.created_at,
+          lastAt: m.created_at,
+        });
+      }
+      const row = byCustomer.get(phone);
+      row.lastAt = m.created_at;
+      if (!row.firstAt || m.created_at < row.firstAt) row.firstAt = m.created_at;
+
+      if (m.role === "user") {
+        row.userMessages += 1;
+      } else if (m.role === "assistant") {
+        row.assistantMessages += 1;
+        const source = detectMessageSource(m.content);
+        if (source === "employee") row.employeeReplies += 1;
+        if (source === "ai") row.aiReplies += 1;
+      }
+    }
+
+    const customerRows = Array.from(byCustomer.values());
+    const customersWithUserMessages = customerRows.filter((c) => c.userMessages > 0);
+    const customersRespondedByAI = customerRows.filter((c) => c.aiReplies > 0).length;
+    const customersRespondedByEmployee = customerRows.filter((c) => c.employeeReplies > 0).length;
+    const customersNotResponded = customersWithUserMessages.filter((c) => c.assistantMessages === 0).length;
+
+    const employeeStats = {};
+    for (const c of (closures || [])) {
+      const name = baseAgentName(c.agent_name || "غير معروف");
+      if (!employeeStats[name]) {
+        employeeStats[name] = {
+          agentName: name,
+          closedConversations: 0,
+          solvedCount: 0,
+          unsolvedCount: 0,
+          closedTickets: 0,
+        };
+      }
+      employeeStats[name].closedConversations += 1;
+      if (c.satisfied) employeeStats[name].solvedCount += 1;
+      else employeeStats[name].unsolvedCount += 1;
+      if (c.ticket_id) employeeStats[name].closedTickets += 1;
+    }
+
+    const ticketStatusCounts = (tickets || []).reduce((acc, t) => {
+      const key = t.status || "غير محدد";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+
+    const recentClosures = (closures || []).slice(0, 100).map((c) => ({
+      customerPhone: c.customer_phone,
+      closedBy: baseAgentName(c.agent_name),
+      ticketId: c.ticket_id,
+      solved: !!c.satisfied,
+      closedAt: c.closed_at,
+    }));
+
+    const pendingHandoffs = Object.entries(humanHandoffs).map(([phone, data]) => ({
+      phone,
+      status: data.agentMode ? "قيد متابعة الموظف" : "غير نشط",
+      agentName: data.agentName || "-",
+      reason: data.agentId === "AUTO_ESCALATION" ? "تصعيد تلقائي من AI" : "تحويل يدوي",
+      rating: data.rating || null,
+      awaitingSatisfaction: !!data.awaitingSatisfaction,
+      startedAt: data.startedAt || null,
+    }));
+
+    res.json({
+      range: { from: range.fromIso, to: range.toIso },
+      totals: {
+        totalCustomers: byCustomer.size,
+        customersWithUserMessages: customersWithUserMessages.length,
+        customersRespondedByAI,
+        customersRespondedByEmployee,
+        customersNotResponded,
+        totalClosures: (closures || []).length,
+        totalTickets: (tickets || []).length,
+      },
+      ticketStatusCounts,
+      employeePerformance: Object.values(employeeStats).sort((a, b) => b.closedConversations - a.closedConversations),
+      pendingHandoffs,
+      recentClosures,
+    });
+  } catch (err) {
+    console.error("❌ خطأ تقرير الأداء:", err.message);
+    res.status(500).json({ error: "تعذر إنشاء التقرير" });
+  }
 });
 
 app.get("/", (req, res) => {
