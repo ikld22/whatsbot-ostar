@@ -81,6 +81,49 @@ function isMaintenanceRequest(text) {
   return keywords.test(text);
 }
 
+// ── دقة مطابقة المنتجات قبل البحث في المتجر ─────────────────
+const PRODUCT_INTENT_TERMS = [
+  "منتج", "منتجات", "شراء", "اشتري", "ابغى", "أبغى", "ابي", "أبي", "سعر", "اسعار", "كم", "متوفر"
+];
+
+const PRODUCT_CATEGORY_TERMS = [
+  "مكيف", "سبليت", "شباك", "دكت", "مركزي", "غسالة", "ثلاجة", "مجفف", "فرن", "مايكرويف", "مايكروويف",
+  "شاشة", "جوال", "تابلت", "لابتوب", "قطع غيار", "مروحة", "ستارة هوائية"
+];
+
+const BRAND_TERMS = ["جري", "gree", "aux", "اوكس", "أوكس", "lg", "ال جي", "ميديا", "سامسونج", "tcl", "هايسنس"];
+
+function normalizeArabic(text = "") {
+  return String(text)
+    .toLowerCase()
+    .replace(/[أإآ]/g, "ا")
+    .replace(/[ى]/g, "ي")
+    .replace(/ة/g, "ه")
+    .replace(/[\u064B-\u0652]/g, "")
+    .trim();
+}
+
+function includesAny(text, terms) {
+  return terms.some((t) => text.includes(normalizeArabic(t)));
+}
+
+function isProductIntent(text) {
+  const t = normalizeArabic(text);
+  return includesAny(t, PRODUCT_INTENT_TERMS) || includesAny(t, PRODUCT_CATEGORY_TERMS);
+}
+
+function isSpecificProductRequest(text) {
+  const t = normalizeArabic(text);
+  const hasCategory = includesAny(t, PRODUCT_CATEGORY_TERMS);
+  const hasBrand = includesAny(t, BRAND_TERMS);
+  const hasSpec = /(\d|حصان|طن|بوصه|بوصة|انش|موديل|حار|بارد|inverter)/i.test(t);
+  return hasCategory || hasBrand || hasSpec;
+}
+
+function buildProductClarificationReply() {
+  return "حياك الله 🌟 للتأكد من إعطائك المنتج الصحيح، نحتاج تحديد بسيط: نوع المنتج أو الماركة أو المقاس (مثال: مكيف سبليت 18 جري أو شاشة 55 بوصة).";
+}
+
 // ==========================================
 // === بروم شركة نجوم العمران (OStar) ===
 // ==========================================
@@ -420,6 +463,13 @@ async function handleTextMessage(from, text, phoneNumberId) {
   }
 
   // ── 3. الرد الاعتيادي مع زد ──
+  if (isProductIntent(text) && !isSpecificProductRequest(text)) {
+    const clarify = buildProductClarificationReply();
+    await sendWhatsAppMessage(from, clarify, phoneNumberId);
+    await saveMessage(from, clarify, "assistant", phoneNumberId);
+    return;
+  }
+
   const productQuery = await extractProductQuery(text);
   const productContext = productQuery ? await searchZidProducts(productQuery) : null;
   const aiReply = await getAIResponse(history, text, productContext, null);
@@ -939,6 +989,10 @@ app.post("/api/ai/chat", async (req, res) => {
   try {
     const { messages } = req.body;
     const lastMsg = messages[messages.length - 1]?.content || "";
+
+    if (isProductIntent(lastMsg) && !isSpecificProductRequest(lastMsg)) {
+      return res.json({ reply: buildProductClarificationReply() });
+    }
 
     // بحث في زد إذا كان سؤال عن منتج
     const productQuery = await extractProductQuery(lastMsg);
