@@ -124,6 +124,33 @@ function buildProductClarificationReply() {
   return "حياك الله 🌟 للتأكد من إعطائك المنتج الصحيح، نحتاج تحديد بسيط: نوع المنتج أو الماركة أو المقاس (مثال: مكيف سبليت 18 جري أو شاشة 55 بوصة).";
 }
 
+function tokenizeQuery(text = "") {
+  const stopWords = new Set([
+    "ابغى", "ابي", "أبي", "أبغى", "اريد", "أريد", "عندي", "عن", "على", "في", "من", "الى", "إلى",
+    "ممكن", "لو", "سعر", "اسعار", "كم", "ابيكم", "عندكم", "متوفر", "موجود", "ابحث", "ابغى", "منتج", "منتجات"
+  ]);
+  return normalizeArabic(text)
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2 && !stopWords.has(t));
+}
+
+function scoreProductMatch(product, queryTokens) {
+  if (!queryTokens.length) return 0;
+  const haystack = normalizeArabic(
+    `${product?.name || ""} ${product?.short_description || ""} ${product?.sku || ""}`
+  );
+
+  let score = 0;
+  for (const token of queryTokens) {
+    if (haystack.includes(token)) score += 1;
+  }
+
+  const firstTwoMatched = queryTokens.slice(0, 2).every((t) => haystack.includes(t));
+  if (firstTwoMatched) score += 1;
+  return score;
+}
+
 // ==========================================
 // === بروم شركة نجوم العمران (OStar) ===
 // ==========================================
@@ -626,7 +653,13 @@ async function searchZidProducts(query) {
         "Accept-Language": "ar",
         "Accept": "application/json",
       },
-      params: { search: query, page_size: 5 }
+      params: {
+        search: query,
+        q: query,
+        keyword: query,
+        page_size: 20,
+        per_page: 20
+      }
     });
 
     // البيانات في results
@@ -637,10 +670,25 @@ async function searchZidProducts(query) {
       return null;
     }
 
-    console.log(`✅ زد: وجد ${products.length} منتج`);
-    console.log("📦 نموذج منتج:", JSON.stringify(products[0], null, 2).slice(0, 500));
+    // زد أحياناً يرجّع منتجات عامة؛ لذلك نطبق فلترة تطابق محلية قبل الإرسال للعميل.
+    const queryTokens = tokenizeQuery(query);
+    const ranked = products
+      .map((p) => ({ p, score: scoreProductMatch(p, queryTokens) }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map((x) => x.p);
 
-    const formatted = products.slice(0, 3).map(p => {
+    const finalProducts = (ranked.length ? ranked : products).slice(0, 3);
+
+    if (ranked.length === 0 && queryTokens.length > 0) {
+      console.log(`⚠️ زد: النتائج غير مطابقة لعبارة البحث "${query}"`);
+      return null;
+    }
+
+    console.log(`✅ زد: وجد ${products.length} منتج | بعد الفلترة: ${finalProducts.length}`);
+    console.log("📦 نموذج منتج:", JSON.stringify(finalProducts[0], null, 2).slice(0, 500));
+
+    const formatted = finalProducts.map(p => {
       const name = p.name || p.title || "بدون اسم";
       // price و sale_price أرقام مباشرة
       const price = p.sale_price || p.price || "غير محدد";
